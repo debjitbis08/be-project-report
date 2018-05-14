@@ -1,0 +1,243 @@
+\chapter{Virtual Time Round Robin}
+
+Virtual Time Round Robin (VTRR) was developed by Prof. Jason Nieh et al. at the 
+Network Computing Lab of Columbia University, NY, and published at the 2001 USENIX
+Annual Technical Conference. It strives to provide good proportional fairness while 
+maintaining \emph{O}(1) time complexity. The algorithm is also remarkable for its simplicity and ease
+of implementation \cite{nvz01}.
+
+\section{Background}
+
+There are two ways to allocate shares of a time multiplexed resource to weighted clients:
+
+\begin{enumerate}
+  \item Adjusting the time slice length.
+  \item Adjusting the frequency of resource allocation.
+\end{enumerate}
+
+The first method is easy to implement and due to its simple structure offers $O(1)$ time 
+complexity. Though it has been used extensively in historic operating systems , it has
+several drawbacks. It is often used in a multi-level feedback scheme (e.g. the traditional
+UNIX scheduler) that is hard to tackle analytically. Further, tests of weighted
+round robin, which does not use a feedback scheme and can therefore be analyzed, show
+that the resulting long time slices result in large service errors of both the executing and
+the waiting clients \cite{nvz01}.
+
+The problem of large service errors lead to the development of the second method \cite{dks89}.
+By allocating only small, fixed length time slices, and selecting clients with different 
+frequencies, it is possible to achieve service errors bounded by 1 time unit \cite{bz96}. The
+problem that arises is how to determine the next client that may receive service without
+violating the service error bounds. Historically, this has been done by using priority queues
+and heaps. Unfortunately this causes a time complexity of \emph{O}($log n$) or even \emph{O}($n$).
+Thus, at the end of the '90s, known algorithms either had weak proportional sharing accuracy or high scheduling overhead [NVZ01].
+
+
+\section{The Algorithm}
+
+The high scheduling overhead of algorithms such as weighted fair queueing \cite{dks89}
+result from the need to maintain a sorted queue. This is because that clients with
+large virtual times should not be selected earlier than clients with small virtual times, as the
+latter have to catch up. In order to achieve \emph{O}(1) time complexity this constant reordering
+must be avoided.
+The goal of VTRR is to combine the efficiency of round robin without giving up too much
+proportional sharing accuracy.
+
+\paragraph{Fundamental Idea}
+
+Obviously a client’s selection frequency is directly proportional to its weight, as it does
+not make sense to give more service to clients with smaller weights. Put the other way
+around, a frequency adjusting proportionally sharing scheduler must select a client $C_a$
+with a weight $\phi_a$ at least as often as all other clients $C_o$ with $\phi_o \le \phi_a$ . We can use this
+natural order of the clients for efficient client selection:
+                    
+\begin{enumerate}                           
+    \item Sort all clients $C_i$ by their weight $\phi_i$ in descending order. We then can state:
+      \begin{equation}
+        \forall C_x , C_y . x < y \rightarrow \phi_x \ge \phi_y
+      \end{equation}
+
+    \item Beginning at the front of the queue, select clients in a round robin manner.
+    \item Before selecting the next client, check whether it would get too far ahead of its fair
+      allocation. If so, reset to the beginning of the queue.
+\end{enumerate}
+
+This simple scheme works because a client $C_x$ with weight $\phi_x$ in the front of the queue
+will at least be selected as often as all clients $C_y$ where $y < x$ and $\phi_y \le \phi_x$ , as a client
+from the back is never selected before all other clients in front of it have been selected.
+To avoid giving too much service to the clients in the back, a reset criteria, called virtual
+time inequality, is needed. Because of the ordering of the clients, we only have to test
+the next client, allowing us to perform the scheduling decision in constant time. Note that
+sorting the queue is only necessary once during initialization and on the (very seldom)
+event of a weight change.
+
+Recall from the definition of service error that at least at the end of every
+$\sum_j\phi_j$   rounds, perfect fairness can be achieved. This period is called a scheduling cycle.
+To attain perfect fairness at the end of every cycle, VTRR keeps a time counter for
+each client and imposes a time counter invariant on the queue. The time counter invariant
+states that in addition to the ordering by descending weight, the queue should also be
+ordered by descending time counters. As we will see, this invariant is used in combination
+with the reset criteria to guarantee fairness at the end of scheduling cycles.
+
+\paragraph{Detailed Description}
+
+VTRR maintains the queue virtual time QVT and three values for each client $C_a$ :
+
+\begin{enumerate}                           
+    \item The share $\phi_a$ which is never changed by VTRR.
+    \item The virtual finish time $VFT_a$ . It determines the client’s progress.
+    \item A time counter $CT_a$ . The time counter is initialized to the client’s weight.
+\end{enumerate}
+
+At the end of each time slice, the queue virtual time and the running client’s virtual finish
+time are incremented by one scaled time unit and the client’s time counter is decremented
+by one.
+
+After updating the state variables of the current client $C_{cur}$ , the next client is scheduled.
+The decision whether to select the client following in the queue $C_{cur+1} = C_{next}$ or to
+reset to the beginning and select $C_1$ is based on two criteria:
+                    
+\begin{enumerate}                           
+\item The time counter invariant:
+  \begin{equation}
+    CT_{cur} \ge CT_{next}
+  \end{equation}
+          
+      If the inequality does not hold, i.e. $CT_{cur} < CT_{next}$ , the invariant is violated and
+      the next client $C_{next}$ is selected without any further questions in order to restore the
+      invariant.
+
+   \item The virtual time inequality .
+     \begin{equation}
+      VFT_{next}(t) - QVT(t + 1) \le \frac{1}{\phi_{next}}
+     \end{equation}                             
+     If the inequality is true, $C_{next}$ is selected. Otherwise $C_1$ is selected.
+\end{enumerate}
+
+What is the reasoning behind the inequalities?
+
+The time counter invariant guarantees, that VTRR does not ``forget'' a client at the end
+of the queue. It holds at the start of a cycle and the only way it might get violated is by
+decreasing the time counter of the current task $CT_{cur}$ that was previously equal to the
+counter $CT_{next}$ . In this case the difference is exactly 1 and can be corrected by running
+$C_{next}$ once. It ensures that we cannot reset to the first client $C_1$ at the end of a cycle
+before attaining perfect fairness. If after a reset the time counter of the first client equals
+zero ($CT_1 = 0$), we know due to the time counter invariant that all time counters must
+equal zero, signaling the end of a cycle. Additional maintenance is needed in that case as
+all time counters have to be reinitialized to each client’s weight.
+
+Summarized VTRR can be expressed as:
+
+''Perform a simple round robin over the sorted queue as long as the time counter invariant
+     is violated or the next client has to catch up, reset to the first client otherwise.''
+
+
+\section{Dynamic Considerations}
+
+In a real world setup, clients may arrive and block at any time. While this is – strictly
+speaking – not a responsibility of the scheduler, fairness constraints should not be violated
+in spite of modifications of the run queue. Especially it should not be possible to receive
+undue service by blocking for short times. Therefore VTRR has to handle the arrival of
+new clients, the blocking of queued clients and the return of blocking clients.
+
+\paragraph{New Client Arrival}
+
+New clients have not yet received any service, so their virtual time is zero. Similarly, the
+time counter has not yet been decremented, so it equals the client’s weight. But obviously
+this would cause VTRR to misbehave, as the algorithm depends on the time counter in-
+variant and comparable virtual finish times. The solution is to initialize a new client with
+values that fit into the current state.
+
+As a new client is neither behind nor ahead of its allocation, the virtual time should equal
+the queue virtual time , allowing us to derive the correct virtual finish time.
+Similarly, the correct time counter value can be calculated from the global progress in the
+current scheduling cycle, which can be expressed as the ratio of the sum of all counters to
+the sum of all weights.
+
+Let $C_n$ be the new client arriving at $t_0$ . The virtual finish time and time counter of $C_n$ will
+be set according to:
+
+\begin{equation}
+  VFT_{n} \leftarrow QVT(t_0) + \frac{1}{\phi_n}
+\end{equation}                             
+
+\begin{equation}
+  TC_n \leftarrow \phi_n*\frac{\sum_jTC_j}{\sum_j\phi_j}
+\end{equation}                             
+
+Keep in mind that $C_n$ is not yet part of the sums used for the calculation of $TC_n$ . After
+the state variables are properly initialized, $C_n$ has to be inserted at the correct position in
+the sorted queue.
+
+\paragraph{Client Removal}
+
+A client can be removed from the queue without disturbing the rest of the clients.
+Therefore client removal should be straight forward. But as the client may return, e.g. it might
+be waiting for IO operations to finish, the current time counter and the current virtual finish
+time have to be kept, as they are needed for reinsertion. Further, it is advantageous to save
+pointers to the previous and next client in the queue, as it may speed up the reinsertion of
+the client.
+
+\paragraph{Blocked Client Return}
+
+To reinsert returning clients, e.g. clients that have run before, the same steps are necessary
+that are performed for for new clients, too. Additionally safeguards have to be 
+implemented to prevent a client from gaming the system. Particularly, a client may not gain a
+smaller virtual finish time than it had before blocking and it may not gain a larger time
+counter, either.
+
+Let $C_r$ be the client returning at $t_1$ . Further, let $VFT_r$ and $CT_r$ be the virtual finish time
+and time counter saved during blocked client removal. The virtual finish time and time counter will be updated according to:
+
+\begin{equation}
+  VFT_r \leftarrow max\bigg\{QVT(t_1) + \frac{1}{\phi_r}, VFT^*_r\bigg\}
+\end{equation}                             
+
+\begin{equation}
+  TC_r \leftarrow min\bigg\{\phi_r*\frac{\sum_jTC_j}{\sum_j\phi_j}, CT^*_r\bigg\}
+\end{equation}
+
+The last step is to reinsert the client into the queue.
+
+
+\section{Why VTRR ?}
+
+We chose VTRR due to a variety of reasons, which are as follows:
+
+\begin{itemize}
+
+\item VTRR effectively has a time complexity of $O(1)$. By reusing the mutilevel priority
+  queue structure of the MINIX3 the client insertion and reinsertion was reduced to $O(1)$
+  from $O(n)$.
+
+\item The algorithm is very easy to implement. We have implemented the algorithm by modifying less than 
+  100 lines of code.
+
+\item A lot scheduler related code and data structures from the original MINIX3 scheduler could be
+  reused.
+
+\end{itemize}
+
+\section{Implementation Details}
+
+The following changes were applied to the MINIX3 kernel code to implement VTRR:
+
+\paragraph{Process Parameters added:}
+\begin{description}
+
+\item[p\_actual\_priority] MINIX3 priorities are in reverse order i.e. zero priority is the highest
+  and 15 is the lowest. This had to be reversed so that the time counter decrement can be performed.
+
+\item[p\_time\_counter] This is the time counter as defined by the VTRR algorithm.
+
+\item[p\_vft] This is the virtual finish time of the process.
+
+\end{description} 
+
+\paragraph{Scheduler Parameters added:}
+\begin{description}
+
+\item[qvt] This is Queue Virtual Time as defined by the VTRR algorithm.
+\item[qvt\_stride] This is the amount by which qvt is incremented after each quantum.
+\item[total\_share] This the sum of all the weights (p\_actual\_priority) of the processes that are runnable.
+
+\end{description}

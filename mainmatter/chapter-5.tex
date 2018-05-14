@@ -1,0 +1,17 @@
+\chapter{Future Plans}
+
+Unfortunately there are no formally proven bounds for the maximum and minimum service
+errors known. Further, while multi-processor capability could be added to VTRR, it is only
+specified for uni-processor systems, rendering it an ill choice for most modern operating
+systems. Therefore VTRR can be considered a step into the right direction, but it is far
+from an optimal solution.
+
+Also how the algorithm behaves in the microkernel environment of MINIX is yet to seen. The
+algorithms performance has to be studied with this in mind.
+
+\begin{itemize}
+\item Implementing other fair schedulers such as $GR^3$
+\item Implementing VTRR using the modular scheduler framework.
+\item Measuring the performance of VTRR in microkernel architecture context.
+\end{itemize}
+

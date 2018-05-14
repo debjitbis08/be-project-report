@@ -1,0 +1,56 @@
+\chapter{Modular Scheduler}
+
+Scheduling Classes have been introduced which implement an extensible hierarchy of
+scheduler modules. These modules encapsulate scheduling policy
+details and are handled by the scheduler core without the core
+code assuming about them too much.
+
+The introduction of scheduling classes makes the core scheduler quite extensible. These classes 
+(the scheduler modules) encapsulate the scheduling policies. Each scheduler module has to implement each of
+the functions suggested by the generic scheduling class.
+
+Some Advantages of this design strategy are:
+\begin{enumerate}
+\item {\bfseries Easier augmentation and exclusion of scheduler policies}: This kind of design allows 
+a programmer to easily introduce new scheduling policies into the kernel. The original code is modified
+ to a minimal extent. This also means that testing of new scheduling algorithms become very easy.
+\item {\bfseries Separate policy for real time tasks}: Real time tasks usually require special treatment by the scheduler.
+A different policy for real-time tasks can be easily implemented in this kind of design.
+\item {\bfseries Easier for students to understand the code}: Since MINIX 3 is widely used as an educational operating system
+in many universities across the world, many of MINX 3's users are students. The design strategy used here will allow 
+students to easily understand the source code and experiment with their own code.
+\end{enumerate}
+
+\section{Design Issues}
+
+The major design issue was which functions should be removed from the core scheduler and assigned to the scheduler modules
+The initial design included only the following functions in the module(these have been implemented):
+\begin{itemize}
+\item The enqueue function which is run each time a task becomes runnable. Based on the scheduling policy of the process a particular
+enqueue funtion is called which enqueues the process in the whatever datastructure that is being used the scheduler policy.
+\item The dequeue function which is run when a task is no longer runnable.
+\item The pick\_proc function chooses the most appropriate process eligible to run next.
+\end{itemize}
+Later the following additional functions were added (these have not been implemented):
+\begin{itemize}
+\item The preempt\_curr is run before a task is preempted.
+\item The task\_tick function is run at every clock tick.
+\end{itemize}
+
+\section{Implementation}
+
+To implement the modular scheduler framework the following step were followed:
+\begin{itemize}
+\item A header \verb|sched.h| was added as suggested by the The Open Group Base Specifications Issue 6~\cite{ie04}.
+The constants \verb|SCHED_FIFO|, \verb|SCHED_RR| were defined. 
+\item The sturcture \verb|sched_class| was defined which encapsulates all the functions that are to be implemented
+by a scheduler module i.e. the ones decided above.
+\item Two new attributes were added to the process structure \verb|p_sched_policy| and \verb|p_sched_class| were the
+first attribute is scheduler policy that is being used to schedule the process and the secon atrribute is a pointer
+to the scheduling class.
+\item Next all the scheduler related functions in the source code of the MINIX 3 kernel
+was replaced by function calls to the appropiate functions in the scheduler modules. All the calls were of the form\\
+\verb|proccess_pointer->sched_class->function|. The \verb|process_pointer| points to process in the context of which 
+the function will be called. \verb|sched_class| is the scheduling class which the process is member of.
+\end{itemize}
+

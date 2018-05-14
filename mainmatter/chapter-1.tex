@@ -1,0 +1,76 @@
+\chapter{Introduction}
+
+When Mr.~Andrew S.~Tanenbaum wrote the MINIX operating system, he wouldn't have thought that it would inspire 
+Linus Torvalds to write Linux, the most revolutionary Operating System in the recent times. Back then MINIX was only meant to be an educational operating system. Now with the introduction of an entirely new version of MINIX - MINIX 3, things are different.
+MINIX 3 now aims a place in the operating system market, and Mr.~Tanenbaum has decided to target the fast expanding embedded systems market and resource limited systems. MINIX 3's unique features include its high 
+reliability and small kernel size due to its microkernel architecture.
+
+Work done by Linux kernel developers Con Kolivas and Ingo Molnar on the Linux process scheduler has shown
+how fairness of the scheduling algorithm can help the interactivity and responsiveness of the system.
+
+\section{What is MINIX 3?}
+
+MINIX 3 is a new open-source operating system designed to be highly reliable, flexible, and secure. 
+It is loosely based somewhat on previous versions of MINIX but is fundamentally different in many key ways. 
+MINIX 1 and 2 were intended as teaching tools; MINIX 3 adds the new goal of being usable as a serious 
+system on resource-limited and embedded computers and for applications requiring high reliability.
+
+MINIX 3 is extremely small, with the part that runs in kernel mode under 4000 lines of executable code. 
+The parts that run in user mode are divided into small modules, well insulated from one another. 
+For example, each device driver runs as a separate user-mode process so a bug in a driver 
+(by far the most significant source of bugs in any operating system), cannot bring down the entire OS. 
+In fact, most of the time when a driver crashes it is automatically replaced without requiring any user intervention, without requiring rebooting, and without affecting running programs. 
+These features, the tiny amount of kernel code, and other aspects significantly enhance system reliability.
+MINIX 3 is initially targeted at the following areas:
+
+\begin{itemize}
+\item Applications where very high reliability is required
+\item Single-chip, small-RAM, low-power, \$100 laptops for Third-World children
+\item Embedded systems (e.g., cameras, DVD recorders, cell phones)
+\item Education (e.g., operating systems courses at universities)
+\end{itemize}
+
+\section{What is a scheduler?}
+
+When a computer is multiprogrammed, it frequently has multiple processes competing for the CPU at the same time.
+When more than one processes are in the ready state, and there is only one CPU available, the operating system must
+decide which process to run first. The part of the operating system that makes this choice is called the scheduler.
+The algorithm it uses is called the scheduling algorithm. See also \cite{ta06} and \cite{ta01}.
+
+\section{Problems with the MINIX 3 scheduler}
+
+MINIX 3 uses a simple priority based multilevel scheduling algorithm. Theoretically multilevel scheduling algorithms are the best regarding responsiveness as discussed by 
+Kleinrock~\cite{kl76}. This increase in responsiveness
+results in a bias towards the interactive tasks. Also, many heuristics are used by most scheduling algorithms to
+identify the I/O bound processes and prioritise them, which puts the CPU bound processes at a disadvantage.
+These heuristics can never be perfect.
+
+The MINIX 3 scheduler code is spread among many files which makes modifying the scheduler extremely difficult.
+At present, the scheduler is very simple but when it expands maintaining it would be difficult. Also MINIX 3
+has to fulfil the role of an educational OS, and a complicated and confusing code structure may discourage the students.
+
+Since MINIX 3 is based on the microkernel architecture, there are several system tasks (e.g. the file server,
+process manager etc.) and drivers which run outside the kernel as user processes. There is no mechanism by
+which the system tasks can be scheduled differently or ahead of user processes. What is needed is set of different
+scheduler policies.
+
+The shortcomings of the present MINIX 3 scheduler can be summarised as:
+
+\begin{itemize}
+\item MINIX 3 scheduler needs to more interactive and fair, as humans expect simple machines to much more responsive than
+a complex one and MINIX 3 is aimed at embedded systems.
+\item The scheduler code is disorganised, which may discourage students from studying it.
+\item Existence of only a single scheduler policy.
+\end{itemize}
+
+\chapter{Project Goals}
+
+The Goals of this project are:
+\begin{enumerate}
+\item Implementation of a fair scheduler in the MINIX 3 operating system and then 
+studying the interactive performance of the system.
+\item Implementation of a modular scheduler framework which will facilitate the introduction
+and new scheduling policies. Note that the modularity will only be at source code level.
+\item Implementation of scheduler related system calls based on the POSIX~\cite{ie04} standard.
+\end{enumerate}
+

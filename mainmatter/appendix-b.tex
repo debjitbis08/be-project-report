@@ -1,0 +1,372 @@
+\chapter{VTRR Scheduler Patch}
+
+\normalsize
+Following is the patch to MINIX 3 version 3.1.3a which implements the VTRR scheduler:
+
+\tiny
+\begin{verbatim}
+--- src/kernel/clock.c	2008-10-28 18:48:01.000000000 +0530
++++ src_v1/kernel/clock.c	2009-05-06 11:47:31.000000000 +0530
+@@ -107,9 +107,9 @@
+    */ 
+   if (prev_ptr->p_ticks_left <= 0 && priv(prev_ptr)->s_flags & PREEMPTIBLE) {
+       if(prev_ptr->p_rts_flags == 0) {	/* if it was runnable .. */
+-	lock_dequeue(prev_ptr);		/* take it off the queues */
+-      	lock_enqueue(prev_ptr);		/* and reinsert it again */ 
++	scheduler_tick(prev_ptr);
+       } else {
++	scheduler_tick(prev_ptr);
+ 	kprintf("CLOCK: %d not runnable; flags: %x\n",
+ 		prev_ptr->p_endpoint, prev_ptr->p_rts_flags);
+       }
+diff -uNrb src/kernel/main.c src_v1/kernel/main.c
+--- src/kernel/main.c	2008-10-28 18:48:01.000000000 +0530
++++ src_v1/kernel/main.c	2009-05-06 16:04:57.000000000 +0530
+@@ -73,6 +73,9 @@
+ 	ip->endpoint = rp->p_endpoint;		/* ipc endpoint */
+ 	rp->p_max_priority = ip->priority;	/* max scheduling priority */
+ 	rp->p_priority = ip->priority;		/* current priority */
++	rp->p_actual_priority = ACTUAL_PRIO(rp->p_priority);
++	rp->p_time_counter = rp->p_actual_priority;
++	rp->p_vft = 0;
+ 	rp->p_quantum_size = ip->quantum;	/* quantum size in ticks */
+ 	rp->p_ticks_left = ip->quantum;		/* current credit */
+ 	strncpy(rp->p_name, ip->proc_name, P_NAME_LEN); /* set process name */
+@@ -168,6 +171,9 @@
+    * Return to the assembly code to start running the current process. 
+    */
+   bill_ptr = proc_addr(IDLE);		/* it has to point somewhere */
++  qvt = 0;
++  scheduler_cycle = 0;
++  reset_scheduler();
+   announce();				/* print MINIX startup banner */
+   restart();
+ }
+diff -uNrb src/kernel/proc.c src_v1/kernel/proc.c
+--- src/kernel/proc.c	2008-10-28 18:48:00.000000000 +0530
++++ src_v1/kernel/proc.c	2009-05-07 16:30:46.000000000 +0530
+@@ -499,12 +499,14 @@
+  */
+   int q;	 				/* scheduling queue to use */
+   int front;					/* add to front or back */
++  char p_time_counter;
+ 
+ #if DEBUG_SCHED_CHECK
+   check_runqueues("enqueue1");
+   if (rp->p_ready) kprintf("enqueue() already ready process\n");
+ #endif
+ 
++  rp->p_vft = MAX(qvt + (rp->p_quantum_size/rp->p_actual_priority), rp->p_vft);
+   /* Determine where to insert to process. */
+   sched(rp, &q, &front);
+ 
+@@ -527,6 +529,25 @@
+    * process yet or current process isn't ready any more, or
+    * it's PREEMPTIBLE.
+    */
++  for (rp=BEG_PROC_ADDR; rp<END_PROC_ADDR; rp++) {
++    if (! isemptyp(rp) && rp->p_rts_flags == 0 && rp != proc_addr(IDLE))
++      total_time_counter += rp->p_time_counter;
++  }
++  if (total_share <= 0) {
++    p_time_counter = rp->p_actual_priority;
++  }
++  else
++    p_time_counter = (rp->p_actual_priority*total_time_counter)/total_share; 
++
++  if (rp->p_sched_cycle == scheduler_cycle)
++    rp->p_time_counter = MIN (p_time_counter, rp->p_time_counter);
++  else
++    rp->p_time_counter = p_time_counter;
++
++  rp->p_sched_cycle = scheduler_cycle;
++
++  total_share += rp->p_actual_priority;
++
+   if(!proc_ptr || proc_ptr->p_rts_flags ||
+     (priv(proc_ptr)->s_flags & PREEMPTIBLE)) {
+      pick_proc();
+@@ -581,6 +602,9 @@
+       prev_xp = *xpp;				/* save previous in chain */
+   }
+ 
++  total_share -= rp->p_actual_priority;
++  rp->p_sched_cycle = scheduler_cycle;
++
+ #if DEBUG_SCHED_CHECK
+   rp->p_ready = 0;
+   check_runqueues("dequeue2");
+@@ -601,17 +625,6 @@
+  */
+   int time_left = (rp->p_ticks_left > 0);	/* quantum fully consumed */
+ 
+-  /* Check whether the process has time left. Otherwise give a new quantum 
+-   * and lower the process' priority, unless the process already is in the 
+-   * lowest queue.  
+-   */
+-  if (! time_left) {				/* quantum consumed ? */
+-      rp->p_ticks_left = rp->p_quantum_size; 	/* give new quantum */
+-      if (rp->p_priority < (IDLE_Q-1)) {  	 
+-          rp->p_priority += 1;			/* lower priority */
+-      }
+-  }
+-
+   /* If there is time left, the process is added to the front of its queue, 
+    * so that it can immediately run. The queue to use simply is always the
+    * process' current priority. 
+@@ -632,18 +645,56 @@
+   register struct proc *rp;			/* process to run */
+   int q;					/* iterate over queues */
+ 
+-  /* Check each of the scheduling queues for ready processes. The number of
+-   * queues is defined in proc.h, and priorities are set in the task table.
+-   * The lowest queue contains IDLE, which is always ready.
+-   */
++  if (prev_ptr && prev_ptr->p_nextready != NIL_PROC) {
++    rp = prev_ptr->p_nextready;
++  }
++  else {
++    if (! prev_ptr || prev_ptr->p_priority >= MIN_USER_Q)
++      q = 0;
++    else
++      q = prev_ptr->p_priority+1;
++
++    for (;q<NR_SCHED_QUEUES; q++) {
++      if ( rdy_head[q] != NIL_PROC) {
++	rp = rdy_head[q];
++	break;
++      }
++    }
++  }
++  if (!prev_ptr || rp->p_priority == IDLE_Q) {
++    goto find_first;
++  }
++
++  if (rp->p_time_counter > prev_ptr->p_time_counter) {
++    next_ptr = rp;
++    if (priv(rp)->s_flags & BILLABLE)	 	
++      bill_ptr = rp;			/* bill for system time */
++    return;
++  }
++  else if (prev_ptr->p_vft - qvt - qvt_stride < 
++	   (prev_ptr->p_quantum_size/prev_ptr->p_actual_priority)) {
++    kprintf ("vft inequality\n");
++    next_ptr = rp;
++    if (priv(rp)->s_flags & BILLABLE)	 	
++      bill_ptr = rp;			/* bill for system time */
++    return;
++  }
++  else {
++    goto find_first;
++  }
++
++ find_first:
+   for (q=0; q < NR_SCHED_QUEUES; q++) {	
+       if ( (rp = rdy_head[q]) != NIL_PROC) {
+           next_ptr = rp;			/* run process 'rp' next */
+           if (priv(rp)->s_flags & BILLABLE)	 	
+               bill_ptr = rp;			/* bill for system time */
++      if (rp != proc_addr(IDLE) && rp->p_time_counter == 0)
++	reset_scheduler();
+           return;				 
+       }
+   }
++
+   panic("no ready process", NO_NUM);
+ }
+ 
+@@ -667,10 +718,7 @@
+       if (! isemptyp(rp)) {				/* check slot use */
+ 	  lock(5,"balance_queues");
+ 	  if (rp->p_priority > rp->p_max_priority) {	/* update priority? */
+-	      if (rp->p_rts_flags == 0) dequeue(rp);	/* take off queue */
+ 	      ticks_added += rp->p_quantum_size;	/* do accounting */
+-	      rp->p_priority -= 1;			/* raise priority */
+-	      if (rp->p_rts_flags == 0) enqueue(rp);	/* put on queue */
+ 	  }
+ 	  else {
+ 	      ticks_added += rp->p_quantum_size - rp->p_ticks_left;
+@@ -691,6 +739,56 @@
+ }
+ 
+ /*===========================================================================*
++ *				reset_scheduler				     *
++ *===========================================================================*/
++PUBLIC void reset_scheduler()
++{
++  register struct proc *rp;
++
++ /*kprintf ("Resetting scheduler(%d,%d)\n", total_share, total_time_counter);*/
++
++  total_share = 0;
++  qvt = 0;
++  for (rp=BEG_PROC_ADDR; rp<END_PROC_ADDR; rp++) {
++    if (! isemptyp(rp) && rp->p_rts_flags == 0 && rp != proc_addr(IDLE)) {
++      lock(6, "reset_scheduler");
++      rp->p_time_counter = rp->p_actual_priority;
++      total_share += rp->p_actual_priority;
++    }
++    unlock(6);
++  }
++  if (total_share > 0)
++    qvt_stride = Q_SIZE/total_share;
++  else
++    qvt_stride = 0;
++
++  scheduler_cycle = (scheduler_cycle < MAX_SCHED_CYCLE) ? 
++    scheduler_cycle++ : 0;
++
++  pick_proc();
++
++}
++
++/*===========================================================================*
++ *				scheduler_tick				     *
++ *===========================================================================*/
++PUBLIC void scheduler_tick(rp)
++register struct proc *rp;
++{
++  int time_left = (rp->p_ticks_left > 0);	/* quantum fully consumed */
++
++  if (total_share > 0)
++    qvt += rp->p_quantum_size/total_share;
++
++  rp->p_time_counter--;
++
++  if (! time_left) {				/* quantum consumed ? */
++      rp->p_ticks_left = rp->p_quantum_size; 	/* give new quantum */
++  }
++  rp->p_vft += rp->p_quantum_size/rp->p_actual_priority;
++}
++
++/*===========================================================================*
+  *				lock_send				     *
+  *===========================================================================*/
+ PUBLIC int lock_send(dst_e, m_ptr)
+diff -uNrb src/kernel/proc.h src_v1/kernel/proc.h
+--- src/kernel/proc.h	2008-10-28 18:48:01.000000000 +0530
++++ src_v1/kernel/proc.h	2009-05-07 11:28:32.000000000 +0530
+@@ -22,10 +22,15 @@
+   short p_misc_flags;		/* flags that do not suspend the process */
+ 
+   char p_priority;		/* current scheduling priority */
++  char p_actual_priority;
++  char p_time_counter;
+   char p_max_priority;		/* maximum scheduling priority */
+   char p_ticks_left;		/* number of scheduling ticks left */
+   char p_quantum_size;		/* quantum size in ticks */
+ 
++  long int p_vft;
++  int p_sched_cycle;
++
+   struct mem_map p_memmap[NR_LOCAL_SEGS];   /* memory map (T, D, S) */
+ 
+   clock_t p_user_time;		/* user time in ticks */
+@@ -120,6 +125,10 @@
+ #define MIN_USER_Q	  14	/* minimum priority for user processes */
+ #define IDLE_Q		  15    /* lowest, only IDLE process goes here */
+ 
++#define MAX_SCHED_CYCLE 100
++#define Q_SIZE 8
++#define ACTUAL_PRIO(p) (IDLE_Q - p + 1)
++
+ /* Magic process table addresses. */
+ #define BEG_PROC_ADDR (&proc[0])
+ #define BEG_USER_ADDR (&proc[NR_TASKS])
+@@ -149,4 +158,9 @@
+ EXTERN struct proc *rdy_head[NR_SCHED_QUEUES]; /* ptrs to ready list headers */
+ EXTERN struct proc *rdy_tail[NR_SCHED_QUEUES]; /* ptrs to ready list tails */
+ 
++long int qvt;
++long int qvt_stride;
++long int total_share;
++int scheduler_cycle;
+ #endif /* PROC_H */
+diff -uNrb src/kernel/proto.h src_v1/kernel/proto.h
+--- src/kernel/proto.h	2008-10-28 18:48:01.000000000 +0530
++++ src_v1/kernel/proto.h	2009-05-06 01:28:39.000000000 +0530
+@@ -33,6 +33,8 @@
+ _PROTOTYPE( void lock_enqueue, (struct proc *rp)			);
+ _PROTOTYPE( void lock_dequeue, (struct proc *rp)			);
+ _PROTOTYPE( void balance_queues, (struct timer *tp)			);
++_PROTOTYPE( void reset_scheduler, (void)			);
++_PROTOTYPE( void scheduler_tick, (struct proc *rp)			);
+ #if DEBUG_ENABLE_IPC_WARNINGS
+ _PROTOTYPE( int isokendpt_f, (char *file, int line, endpoint_t e, int *p, int f));
+ #define isokendpt_d(e, p, f) isokendpt_f(__FILE__, __LINE__, (e), (p), (f))
+diff -uNrb src/kernel/system/do_exec.c src_v1/kernel/system/do_exec.c
+--- src/kernel/system/do_exec.c	2008-10-28 18:47:58.000000000 +0530
++++ src_v1/kernel/system/do_exec.c	2009-05-06 01:31:34.000000000 +0530
+@@ -51,7 +51,8 @@
+   } else {
+   	strncpy(rp->p_name, "<unset>", P_NAME_LEN);
+   }
+-  
++  rp->p_time_counter = rp->p_actual_priority;
++  rp->p_vft = 0;
+   return(OK);
+ }
+ #endif /* USE_EXEC */
+diff -uNrb src/kernel/system/do_fork.c src_v1/kernel/system/do_fork.c
+--- src/kernel/system/do_fork.c	2008-10-28 18:47:58.000000000 +0530
++++ src_v1/kernel/system/do_fork.c	2009-05-06 01:48:15.000000000 +0530
+@@ -55,6 +55,9 @@
+   rpc->p_user_time = 0;		/* set all the accounting times to 0 */
+   rpc->p_sys_time = 0;
+ 
++  rpc->p_time_counter = rpc->p_actual_priority;
++  rpc->p_vft = 0;
++
+   /* Parent and child have to share the quantum that the forked process had,
+    * so that queued processes do not have to wait longer because of the fork.
+    * If the time left is odd, the child gets an extra tick.
+diff -uNrb src/kernel/system/do_nice.c src_v1/kernel/system/do_nice.c
+--- src/kernel/system/do_nice.c	2008-10-28 18:47:59.000000000 +0530
++++ src_v1/kernel/system/do_nice.c	2009-05-06 01:31:25.000000000 +0530
+@@ -48,6 +48,7 @@
+        */
+       RTS_LOCK_SET(rp, NO_PRIORITY);
+       rp->p_max_priority = rp->p_priority = new_q;
++      rp->p_actual_priority = ACTUAL_PRIO(new_q);
+       RTS_LOCK_UNSET(rp, NO_PRIORITY);
+ 
+       return(OK);
+diff -uNrb src/kernel/table.c src_v1/kernel/table.c
+--- src/kernel/table.c	2008-10-28 18:48:01.000000000 +0530
++++ src_v1/kernel/table.c	2009-05-06 04:26:06.000000000 +0530
+@@ -110,19 +110,19 @@
+ 
+ PUBLIC struct boot_image image[] = {
+ /* process nr, pc,flags, qs,  queue, stack, traps, ipcto, call,  name */ 
+-{IDLE,  idle_task,IDL_F,  8, IDLE_Q, IDL_S,     0,     0, no_c,"idle"  },
+-{CLOCK,clock_task,TSK_F,  8, TASK_Q, TSK_S, TSK_T,     0, no_c,"clock" },
+-{SYSTEM, sys_task,TSK_F,  8, TASK_Q, TSK_S, TSK_T,     0, no_c,"system"},
+-{HARDWARE,      0,TSK_F,  8, TASK_Q, HRD_S,     0,     0, no_c,"kernel"},
+-{PM_PROC_NR,    0,SRV_F, 32,      3, 0,     SRV_T, SRV_M, c(pm_c),"pm"    },
+-{FS_PROC_NR,    0,SRV_F, 32,      4, 0,     SRV_T, SRV_M, c(fs_c),"vfs"   },
+-{RS_PROC_NR,    0,SRV_F,  4,      3, 0,     SRV_T, SYS_M, c(rs_c),"rs"    },
+-{DS_PROC_NR,    0,SRV_F,  4,      3, 0,     SRV_T, SYS_M, c(ds_c),"ds"    },
+-{TTY_PROC_NR,   0,SRV_F,  4,      1, 0,     SRV_T, SYS_M,c(tty_c),"tty"   },
+-{MEM_PROC_NR,   0,SRV_F,  4,      2, 0,     SRV_T, SYS_M,c(mem_c),"memory"},
+-{LOG_PROC_NR,   0,SRV_F,  4,      2, 0,     SRV_T, SYS_M,c(drv_c),"log"   },
+-{MFS_PROC_NR,   0,SRV_F, 32,      4, 0,     SRV_T, SRV_M, c(fs_c),"mfs"   },
+-{INIT_PROC_NR,  0,USR_F,  8, USER_Q, 0,     USR_T, USR_M, no_c,"init"  },
++{IDLE,  idle_task,IDL_F,  Q_SIZE, IDLE_Q, IDL_S,     0,     0, no_c,"idle"  },
++{CLOCK,clock_task,TSK_F,  Q_SIZE, TASK_Q, TSK_S, TSK_T,     0, no_c,"clock" },
++{SYSTEM, sys_task,TSK_F,  Q_SIZE, TASK_Q, TSK_S, TSK_T,     0, no_c,"system"},
++{HARDWARE,      0,TSK_F,  Q_SIZE, TASK_Q, HRD_S,     0,     0, no_c,"kernel"},
++{PM_PROC_NR,    0,SRV_F,  Q_SIZE,      3, 0,     SRV_T, SRV_M, c(pm_c),"pm"  },
++{FS_PROC_NR,    0,SRV_F,  Q_SIZE,      4, 0,     SRV_T, SRV_M, c(fs_c),"vfs" },
++{RS_PROC_NR,    0,SRV_F,  Q_SIZE,      3, 0,     SRV_T, SYS_M, c(rs_c),"rs"  },
++{DS_PROC_NR,    0,SRV_F,  Q_SIZE,      3, 0,     SRV_T, SYS_M, c(ds_c),"ds"  },
++{TTY_PROC_NR,   0,SRV_F, Q_SIZE,      1, 0,     SRV_T, SYS_M,c(tty_c),"tty"  },
++{MEM_PROC_NR,   0,SRV_F,Q_SIZE,      2, 0,     SRV_T, SYS_M,c(mem_c),"memory"},
++{LOG_PROC_NR,   0,SRV_F,  Q_SIZE,      2, 0,     SRV_T, SYS_M,c(drv_c),"log" },
++{MFS_PROC_NR,   0,SRV_F, Q_SIZE,      4, 0,     SRV_T, SRV_M, c(fs_c),"mfs" },
++{INIT_PROC_NR,  0,USR_F,  Q_SIZE, USER_Q, 0,     USR_T, USR_M, no_c,"init"  },
+ };
+ 
+ /* Verify the size of the system image table at compile time. Also verify that
+ 
+\end{verbatim}
+

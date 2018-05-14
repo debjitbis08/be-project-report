@@ -1,0 +1,155 @@
+\chapter{Background}
+
+Proportional share resource management provides a flexible and useful abstraction for multiplexing a scarce resource among user and applications. The basic idea is each client has an associated weight,
+and resources are allocated to the clients in proportion to their respective weights. Because of its usefulness, 
+many proportional share scheduling mechanisms have been developed.
+
+Proportional share scheduling mechanisms were first developed decades ago with the introduction of
+weighted round-robin scheduling. Later, fair-share algorithms based on controlling priority
+values were developed and incorporated into some UNIX based operating systems.
+These earlier mechanisms were typically fast, requiring only constant time to select a client for execution.
+However, they were limited in the accuracy with which they could achieve proportional sharing.
+As a result, starting in the late 1980s, fair queueing algorithms were developed first for
+network packet scheduling and later for CPU scheduling. These algorithms provided better
+proportional sharing accuracy.
+                                               
+Previous proportional sharing mechanisms can be
+classified into four categories: those that are fast but
+have weaker proportional fairness guarantees, those that
+map well to existing scheduler frameworks in current
+commercial operating systems but have no well-defined
+proportional fairness guarantees, those that have strong
+overhead, and those that have weaker proportional fairness guarantees but have higher scheduling overhead.
+The four categories correspond to round-robin, fair-share, fair queueing, and lottery mechanisms.
+
+\section{Fair-Share}
+
+Fair-share schedulers arose as a result of
+a need to provide proportional sharing among users in a
+way compatible with a UNIX-style time-sharing framework. In UNIX time-sharing, scheduling is done based
+on multi-level feedback with a set of priority queues.
+Each client has a priority which is adjusted as it executes.
+The scheduler executes the client with the highest priority. The idea of fair-share was to provide proportional
+sharing among users by adjusting the priorities of a user's clients suitably. Fair-share provides proportional sharing by effectively running clients at different frequencies, as opposed to WRR which only adjusts
+the size of the clients’ time quanta. Fair-share schedulers were compatible with UNIX scheduling frameworks and relatively easy to deploy in existing UNIX
+environments. Unlike round-robin scheduling, the focus was on providing proportional sharing to groups of
+users as opposed to individual clients. However, the approaches were often ad-hoc and it is difficult to formalize the proportional fairness guarantees they provided.
+Empirical measurements show that these approaches
+only provide reasonable proportional fairness over relatively large time intervals. It is almost certainly the
+case that the allocation errors in these approaches can be
+very large.
+
+\section{Proportional Share Fairness}
+
+We use the same definition of fairness as Caprita et al. \cite{ccn05} which is based on the
+Generalized Processor Sharing model \cite{kl76}.
+
+The idea is that there are multiple clients requesting access to a shared resource. Further,
+these clients have different privileges which are expressed as weights. The weights define
+how much service a client should receive in relation to other clients and how large its share
+of the resource should be. For example, a client with a weight of 2 should receive twice as
+much service as a client with a weight of 1. Further, in case the sum of all weights is 10, it
+should receive 20\% of the available resource.
+
+Formally, this can be expressed as follows: Let $W_{C_a}(t_1, t_2)$ be the amount of service received, 
+i.e. execution time, by a client $C_a$ in the interval between $t_1$ and $t_2$. Given
+many arbitrary clients, $C_j$ and their associated positive weights $\phi_j$ a scheduling algorithm
+is fair if and only if
+
+\begin{equation}
+  \forall a. W_{C_a}(t_1, t_2) = (t_2 - t_1)\frac{\phi_a}{\sum_j\phi_j} \label{1}
+\end{equation}
+
+is true for all intervals [$t_1$ , $t_2$].
+
+This means that each client should receive service exactly \emph{proportional} to its
+\emph{share} of the total weight.
+
+\paragraph{Service Error}
+
+Obviously, no real world scheduling algorithm can be entirely fair. This is due to hardware
+and efficiency constraints that make it necessary to allocate the CPU in discrete time units
+(TUs). As only one client can advance at one point in time, a client gets ahead of its
+proportional share of service while running and falls behind while being queued, thus
+creating an unfair state. The difference between what a client should have received in an
+interval and what it actually received is called the \emph{service error}.
+
+Let $W_{C_a}(t_1, t_2)$ denote the work actually received by $C_a$ in $[t_1 , t_2]$.
+Then the service error $E_{C_a}(t_1 , t_2 )$ of a client $C_a$ is defined as:
+
+\begin{equation}
+  E_{C_1}(t_1, t_2) = W_{C_a}(t_1, t_2) - (t_2 - t_1)\frac{\phi_a}{\sum_j\phi_j}
+\end{equation}
+                                             
+A negative service error indicates that a client has fallen behind, while a positive service
+error signals disproportionate resource consumption. Note that while it may not be
+ possible to avoid service errors at all times, it is at least possible to achieve perfect fairness every
+$\sum_j \phi_j$ rounds. Therefore it must be the goal of real world proportional share schedulers to
+minimise the maximum absolute service errors in between. Ideally it should be possible
+to give constant bounds for the maximum and minimum service errors for a scheduling
+algorithm, i.e. it should have an \emph{O}(1) service error.
+
+\paragraph{Virtual Time}
+
+When deciding which client should receive service next, a proportional share scheduler
+has to consider past resource allocation. Ideally, given two clients $C_a$ and $C_b$, we would
+like to simply compare their received service times $W_{C_a}(t_1 , t_2)$ and $W_{C_b}(t_1 , t_2)$ and select
+the one which received less service so far. But doing so in terms of the absolute number of
+allocated time units is pointless, as clients with larger weights should receive more service
+than clients with smaller weights.
+
+A measure for a client's normalised progress can be obtained by first scaling the received
+service by the weight to account for different rights to the resource. The result is called
+\emph{virtual time} \cite{dks89,nvz01} and is defined as follows:
+
+\begin{equation}
+  VT_{C_a}(t) = \frac{W_{C_a}(0 , t)}{\phi_a}
+\end{equation}
+
+The virtual times of clients can be used to compare their past resource allocation directly, as differences in weights allow for proportional differences in absolute service times.
+
+\paragraph{Queue Virtual Time}
+
+While virtual time allows us to tell whether a client is ahead of another client easily, it
+does not tell us whether these clients are ahead or behind of their proportional share, i.e.
+whether they have a positive or negative service error. Starting from a fair state, we can
+derive a term that allows for such a comparison.
+
+In a fair state, equation\eqref{1}  holds. Assuming $t_0$ = 0, the equation can be rewritten as
+follows:
+
+\begin{align}
+                 &\forall  a. W_{C_a}(0, t) &= &\quad t*\frac{\phi_a}{\sum_j\phi_j} \nonumber\\
+\Leftrightarrow  &\forall  a. \frac{W_{C_a}(0, t)}{\phi_a} &= &\quad t*\frac{1}{\sum_j\phi_j} \nonumber\\
+\Leftrightarrow  &\forall  a. VT_{C_a}(t)  &= &\quad \frac{t}{\sum_j\phi_j}\nonumber
+\end{align}
+
+The term on the right side of the last equation is independent of the client weight $\phi_a$. This
+shows on the one hand that in a fair state all virtual times must be equal and on the other
+hand gives us an easy to compute figure allowing for quick comparisons of clients virtual
+time. This is called \emph{queue virtual time}~\cite{nvz01}.
+
+\begin{equation}
+  QVT(t) = \frac{t}{\sum_j\phi_j}
+\end{equation}
+
+As the virtual time of a client should always be equal to the queue virtual time, we can
+infer from a smaller virtual time that the client has fallen behind its proportional allocation
+and vice versa for larger virtual times.
+
+
+\section{Defining Interactivity and Reponsiveness}
+
+These two terms, usually used interchangeably in operating system literature are difficult to define quantities.
+They are heavily dependent on the perception of the user and are difficult to measure (if one cannot define 
+something how can it be measured).
+
+We would prefer to define these quantities as:
+\begin{description}
+\item[Responsiveness] is the rate at which the processes can proceed under different kind of loads.
+\item[Interactivity] is the scheduler latency that a process experiences under different load conditions
+\end{description}
+
+The two definitions are very close, but there is a subtle difference. Responsiveness will tend to measure the long-term
+behaviour of a process, whereas interactivity will measure the short-term behaviour or the `snappiness'.
+
